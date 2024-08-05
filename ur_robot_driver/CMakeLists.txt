@@ -147,7 +147,10 @@ install(TARGETS ur_robot_driver_plugin urcl_log_handler ur_robot_driver_node rob
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
-catkin_install_python(PROGRAMS scripts/tool_communication scripts/test_move
+catkin_install_python(PROGRAMS scripts/tool_communication 
+  scripts/test_move
+  scripts/talker
+  scripts/sender
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
 install(DIRECTORY config launch resources

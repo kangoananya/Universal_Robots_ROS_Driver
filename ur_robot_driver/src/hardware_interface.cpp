@@ -333,6 +333,7 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
   // end
   command_sub_ = robot_hw_nh.subscribe("script_command", 1, &HardwareInterface::commandCallback, this);
 
+ freedrive_sub_ = robot_hw_nh.subscribe("enable_freedrive_mode", 1, &HardwareInterface::freedriveCallback, this);
   // Names of the joints. Usually, this is given in the controller config file.
   if (!robot_hw_nh.getParam("joints", joint_names_))
   {
@@ -1198,6 +1199,36 @@ void HardwareInterface::commandCallback(const std_msgs::StringConstPtr& msg)
     ROS_ERROR_STREAM("Error sending script to robot");
   }
 }
+
+void HardwareInterface::freedriveCallback(const std_msgs::Float64Ptr& msg)
+{
+  std::stringstream freedrive_script;
+  freedrive_script << "def freedriveProgram():\n";
+  freedrive_script << "\t freedrive_mode()\n";
+  if (msg->data == 1.0)
+  {
+    freedrive_script << "\t while(get_digital_out(1))\n:";
+    freedrive_script << "\t sleep(0.1)\n";
+    freedrive_script << "\t end\n";
+    freedrive_script << "end\n";
+  }
+  if (ur_driver_ == nullptr)
+  {
+    throw std::runtime_error("Trying to use the ur_driver_ member before it is initialized. This should not happen, "
+                             "please contact the package maintainer.");
+  }
+
+  if (ur_driver_->sendScript(freedrive_script.str()))
+  {
+    ROS_WARN_STREAM("Sent freedrive mode script to robot - you will have to restart the External Control program.");
+  }
+  else
+  {
+    ROS_ERROR_STREAM("Error sending freedrive mode script to robot");
+  }
+}
+
+
 
 bool HardwareInterface::activateSplineInterpolation(std_srvs::SetBoolRequest& req, std_srvs::SetBoolResponse& res)
 {
