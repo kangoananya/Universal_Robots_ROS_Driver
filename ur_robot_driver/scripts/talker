@@ -24,6 +24,16 @@ TLS_PORT = 8081
 NORMAL_PORT = 1883
 FILEPATH = "/home/github/crafts_extended/json/tcp_frames.json"
 
+# ROS Topics
+TOOLFRAME_TOPIC = "/tf"
+FREEDRIVE_TOPIC = "/ur_hardware_interface/enable_freedrive_mode"
+# Services
+SET_SPEED_TOPIC = "/ur_hardware_interface/set_speed_slider"
+SET_IO_TOPIC = "/ur_hardware_interface/set_io"
+PLAY_TOPIC = "/ur_hardware_interface/dashboard/play"
+STOP_TOPIC = "/ur_hardware_interface/dashboard/stop"
+
+
 # Global Variables
 freedrive_pub = None
 freedrive = False
@@ -35,6 +45,18 @@ logging.basicConfig(
 
 
 def tf_callback(data):
+    """
+    Callback function for processing TF data.
+
+    Args:
+        data: The TF data received.
+
+    Raises:
+        Exception: If there is an error in processing the TF data.
+
+    Returns:
+        None
+    """
     try:
         tcp_frame = {
             "position": data.transforms[0].transform.translation,
@@ -48,15 +70,27 @@ def tf_callback(data):
 
 
 def listener():
-    rospy.Subscriber("/tf", TFMessage, tf_callback)
+    """
+    Subscribes to the "/tf" topic and calls the tf_callback function when a message is received.
+    """
+    rospy.Subscriber(TOOLFRAME_TOPIC, TFMessage, tf_callback)
     rospy.spin()
 
 
 def set_speed(speed):
+    """
+    Sets the speed slider fraction for the UR robot.
+
+    Args:
+        speed (float): The desired speed fraction (between 0.0 and 1.0).
+
+    Raises:
+        rospy.ServiceException: If the service call to set the speed slider fails.
+    """
     try:
-        rospy.wait_for_service("/ur_hardware_interface/set_speed_slider")
+        rospy.wait_for_service(SET_SPEED_TOPIC)
         speed_fraction = rospy.ServiceProxy(
-            "/ur_hardware_interface/set_speed_slider", SetSpeedSliderFraction
+            SET_SPEED_TOPIC, SetSpeedSliderFraction
         )
         speed_fraction(speed)
     except rospy.ServiceException as e:
@@ -64,27 +98,54 @@ def set_speed(speed):
 
 
 def play_program():
+    """
+    Plays the program on the Universal Robots dashboard.
+
+    This function waits for the "/ur_hardware_interface/dashboard/play" service to become available,
+    then calls the service to play the program.
+
+    Raises:
+        rospy.ServiceException: If the service call fails.
+    """
     try:
-        rospy.wait_for_service("/ur_hardware_interface/dashboard/play")
-        play = rospy.ServiceProxy("/ur_hardware_interface/dashboard/play", Trigger)
+        rospy.wait_for_service(PLAY_TOPIC)
+        play = rospy.ServiceProxy(PLAY_TOPIC, Trigger)
         play()
     except rospy.ServiceException as e:
         logging.error(f"Service call failed: {e}")
 
 
 def stop_program():
+    """
+    Stops the program execution on the Universal Robots robot by calling the "/ur_hardware_interface/dashboard/stop" service.
+
+    This function waits for the service to become available, creates a service proxy, and then calls the service to stop the program execution.
+    If an exception occurs during the service call, it logs an error message.
+
+    :return: None
+    """
     try:
-        rospy.wait_for_service("/ur_hardware_interface/dashboard/stop")
-        stop = rospy.ServiceProxy("/ur_hardware_interface/dashboard/stop", Trigger)
+        rospy.wait_for_service(STOP_TOPIC)
+        stop = rospy.ServiceProxy(STOP_TOPIC, Trigger)
         stop()
     except rospy.ServiceException as e:
         logging.error(f"Service call failed: {e}")
 
 
 def set_io(id, value=False):
+    """
+    Sets the value of a specific I/O pin on the Universal Robots robot.
+
+    Args:
+        id (int): The ID of the I/O pin to set.
+        value (bool, optional): The value to set the I/O pin to. Defaults to False.
+
+    Raises:
+        rospy.ServiceException: If the service call to set the I/O pin fails.
+    """
     try:
-        rospy.wait_for_service("/ur_hardware_interface/set_io")
-        setio = rospy.ServiceProxy("/ur_hardware_interface/set_io", SetIO)
+        rospy.wait_for_service(SET_IO_TOPIC)
+        setio = rospy.ServiceProxy(SET_IO_TOPIC, SetIO)
         val = 1.0 if value else 0.0
         setio(1, id, val)
     except rospy.ServiceException as e:
@@ -92,6 +153,16 @@ def set_io(id, value=False):
 
 
 def freedrive_on():
+    """
+    Enables the freedrive mode on the robot.
+
+    This function stops the current program, sets the I/O pin 1 to True,
+    sleeps for 0.5 seconds, and publishes a message to enable freedrive mode.
+
+    Note: Make sure to have the necessary dependencies imported and initialized
+    before calling this function.
+
+    """
     stop_program()
     set_io(1, True)
     rospy.sleep(0.5)
@@ -99,16 +170,46 @@ def freedrive_on():
 
 
 def freedrive_off():
+    """
+    Turn off the freedrive mode.
+
+    This function sets the I/O pin to False to disable the freedrive mode and
+    then waits for 0.5 seconds using rospy.sleep().
+
+    """
     set_io(1, False)
     rospy.sleep(0.5)
 
 
 def on_connect(client, userdata, flags, rc):
+    """
+    Callback function that is called when the client connects to the MQTT broker.
+
+    Parameters:
+        client (mqtt.Client): The MQTT client instance.
+        userdata: The user data that was passed to the client when it was created.
+        flags: Response flags sent by the broker.
+        rc (int): The connection result code.
+
+    Returns:
+        None
+    """
     logging.info(f"Connected with result code {rc}")
     client.subscribe(FREE_TOPIC)
 
 
 def on_message(client, userdata, message):
+    """
+    Callback function that is called when a message is received.
+
+    Parameters:
+    - client: The MQTT client instance that received the message.
+    - userdata: Any user-defined data that was passed to the MQTT client.
+    - message: The received message object.
+
+    Returns:
+    None
+    """
     global freedrive
     msg = message.payload.decode("utf-8")
     if msg.strip() == '"FREEDRIVE"':
@@ -122,10 +223,31 @@ def on_message(client, userdata, message):
 
 
 def on_disconnect(client, userdata, rc):
+    """
+    Callback function called when the MQTT client is disconnected from the broker.
+
+    Parameters:
+        client: The MQTT client instance.
+        userdata: The user data associated with the client.
+        rc: The disconnection result code.
+
+    Returns:
+        None
+    """
     logging.info("Disconnected from MQTT broker.")
 
 
 def handle_shutdown(signum, frame):
+    """
+    Handles the shutdown of the program.
+
+    Args:
+        signum (int): The signal number.
+        frame (frame): The current stack frame.
+
+    Returns:
+        None
+    """
     logging.info("Exiting...")
     client.loop_stop()
     client.disconnect()
@@ -150,7 +272,7 @@ if __name__ == "__main__":
 
     rospy.init_node("worker", anonymous=True)
     freedrive_pub = rospy.Publisher(
-        "/ur_hardware_interface/enable_freedrive_mode", Float64, queue_size=10
+        FREEDRIVE_TOPIC, Float64, queue_size=10
     )
 
     # listener()
