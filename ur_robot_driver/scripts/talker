@@ -5,8 +5,33 @@ import rospy
 import json
 from tf2_msgs.msg import TFMessage
 import std_msgs
+import time
+from ur_msgs.srv import SetSpeedSliderFraction, SetIO
+
+from std_srvs.srv import Trigger
+
+import paho.mqtt.client as mqtt
+
+
+
+MQTT_SERVER = "test.mosquitto.org"
+FREE_TOPIC = "carpenters_robot/free"
+TCP_TOPIC = "carpenters_robot/tcp"
+IMAGE_TOPIC = "carpenters_robot/img"
+ID_TOPIC = "carpenters_robot/id"
+NICLAIOT_TOPIC = "carpenters_robot/iot"
+CONFIRM_TOPIC = "carpenters_robot/confirm"
+SPEED_TOPIC = "carpenters_robot/speed"
+tls_port = 8081
+normal_port = 1883
 
 filepath = '/home/github/crafts_extended/json/tcp_frames.json'
+global freedrive_pub
+
+freedrive = False
+
+rospy.init_node('worker', anonymous=True)
+freedrive_pub = rospy.Publisher('/ur_hardware_interface/enable_freedrive_mode', std_msgs.msg.Float64, queue_size=10)
 
 def tf_callback(data):
     # rospy.loginfo(data.transforms[0].child_frame_id)
@@ -20,15 +45,94 @@ def tf_callback(data):
 
     rospy.signal_shutdown("Data saved")
 
-
-def worker():
-    global freedrive_pub
-    rospy.init_node('tool_frame', anonymous=True)
+def listener():
     rospy.Subscriber('/tf', TFMessage, tf_callback)
-    freedrive_pub = rospy.Publisher('/ur_hardware_interface/enable_freedrive_mode', std_msgs.Float64, queue_size=10)
     rospy.spin()
 
+def set_speed(speed):
+    rospy.wait_for_service('/ur_hardware_interface/set_speed_slider')
+    speed_fraction = rospy.ServiceProxy('/ur_hardware_interface/set_speed_slider', SetSpeedSliderFraction)
+    speed_fraction(speed)
+
+def play_program():
+    rospy.wait_for_service('/ur_hardware_interface/dashboard/play')
+    play = rospy.ServiceProxy('/ur_hardware_interface/dashboard/play', Trigger)
+    play()
+
+def stop_program():
+    rospy.wait_for_service('/ur_hardware_interface/dashboard/stop')
+    stop = rospy.ServiceProxy('/ur_hardware_interface/dashboard/stop', Trigger)
+    stop()
+
+def set_io(id, value = False):
+    rospy.wait_for_service('/ur_hardware_interface/set_io')
+    setio = rospy.ServiceProxy('/ur_hardware_interface/set_io', SetIO)
+    val = 1.0 if value==True else 0.0
+    setio(1, id, val)
+
+def freedrive_for_a_bit():
+    stop_program()
+    set_io(1,True)
+    rospy.sleep(0.5)
+    freedrive_pub.publish(1.0)
+    time.sleep(10.0)
+    set_io(1,False)
+
+def freedrive_on():
+    stop_program()
+    set_io(1,True)
+    rospy.sleep(0.5)
+    freedrive_pub.publish(1.0)
+
+def freedrive_off():
+    set_io(1,False)
+    rospy.sleep(0.5)
+    
+    
+def on_connect(client, userdata, flags, rc):
+    print("Connected with result code "+str(rc))
+    # Subscribing in on_connect() means that if we lose the connection and
+    client.subscribe(FREE_TOPIC)
+
+def on_message(client, userdata, message):
+    global freedrive
+    msg = message.payload.decode("utf-8")
+    if msg.strip() == '"FREEDRIVE"':
+        if not freedrive:
+            print('works')
+            freedrive = True
+            print('yessssss')
+            freedrive_on()
+
+    elif msg.upper() == '"NO_FREEDRIVE"':
+        if freedrive:
+            freedrive = False
+            freedrive_off()
+            print('nooooooo')
+
+def on_disconnect(client, userdata, rc):
+    print("Disconnected from MQTT broker.")
 
 if __name__ == '__main__':
-    worker()
+        # Create an MQTT client instance
+    client = mqtt.Client()
+
+    # Assign event callbacks
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.on_disconnect = on_disconnect
+
+    # Connect to the MQTT broker
+    client.connect(MQTT_SERVER, normal_port, 60)
+
+    # Start the MQTT client loop
+    client.loop_start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Exiting...")
+        client.loop_stop()
+        client.disconnect()
 
