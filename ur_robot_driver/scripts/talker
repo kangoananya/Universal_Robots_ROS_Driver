@@ -1,19 +1,17 @@
 #!/usr/bin/env python
-# !\file
 
 import rospy
 import json
-from tf2_msgs.msg import TFMessage
-import std_msgs
 import time
+import signal
+import logging
+import paho.mqtt.client as mqtt
+from tf2_msgs.msg import TFMessage
+from std_msgs.msg import Float64
 from ur_msgs.srv import SetSpeedSliderFraction, SetIO
-
 from std_srvs.srv import Trigger
 
-import paho.mqtt.client as mqtt
-
-
-
+# Configuration
 MQTT_SERVER = "test.mosquitto.org"
 FREE_TOPIC = "carpenters_robot/free"
 TCP_TOPIC = "carpenters_robot/tcp"
@@ -22,117 +20,137 @@ ID_TOPIC = "carpenters_robot/id"
 NICLAIOT_TOPIC = "carpenters_robot/iot"
 CONFIRM_TOPIC = "carpenters_robot/confirm"
 SPEED_TOPIC = "carpenters_robot/speed"
-tls_port = 8081
-normal_port = 1883
+TLS_PORT = 8081
+NORMAL_PORT = 1883
+FILEPATH = "/home/github/crafts_extended/json/tcp_frames.json"
 
-filepath = '/home/github/crafts_extended/json/tcp_frames.json'
-global freedrive_pub
-
+# Global Variables
+freedrive_pub = None
 freedrive = False
 
-rospy.init_node('worker', anonymous=True)
-freedrive_pub = rospy.Publisher('/ur_hardware_interface/enable_freedrive_mode', std_msgs.msg.Float64, queue_size=10)
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
 
 def tf_callback(data):
-    # rospy.loginfo(data.transforms[0].child_frame_id)
-    # rospy.loginfo(data.transforms[0].transform.translation)
-    # rospy.loginfo(data.transforms[0].transform.rotation)
-    tcp_frame = {"position":data.transforms[0].transform.translation,
-                 "rotation":data.transforms[0].transform.rotation
-    }
-    with open(filepath,'w') as f:
-        json.dump(tcp_frame, fp=filepath)
+    try:
+        tcp_frame = {
+            "position": data.transforms[0].transform.translation,
+            "rotation": data.transforms[0].transform.rotation,
+        }
+        with open(FILEPATH, "w") as f:
+            json.dump(tcp_frame, f)
+        rospy.signal_shutdown("Data saved")
+    except Exception as e:
+        logging.error(f"Error in tf_callback: {e}")
 
-    rospy.signal_shutdown("Data saved")
 
 def listener():
-    rospy.Subscriber('/tf', TFMessage, tf_callback)
+    rospy.Subscriber("/tf", TFMessage, tf_callback)
     rospy.spin()
 
+
 def set_speed(speed):
-    rospy.wait_for_service('/ur_hardware_interface/set_speed_slider')
-    speed_fraction = rospy.ServiceProxy('/ur_hardware_interface/set_speed_slider', SetSpeedSliderFraction)
-    speed_fraction(speed)
+    try:
+        rospy.wait_for_service("/ur_hardware_interface/set_speed_slider")
+        speed_fraction = rospy.ServiceProxy(
+            "/ur_hardware_interface/set_speed_slider", SetSpeedSliderFraction
+        )
+        speed_fraction(speed)
+    except rospy.ServiceException as e:
+        logging.error(f"Service call failed: {e}")
+
 
 def play_program():
-    rospy.wait_for_service('/ur_hardware_interface/dashboard/play')
-    play = rospy.ServiceProxy('/ur_hardware_interface/dashboard/play', Trigger)
-    play()
+    try:
+        rospy.wait_for_service("/ur_hardware_interface/dashboard/play")
+        play = rospy.ServiceProxy("/ur_hardware_interface/dashboard/play", Trigger)
+        play()
+    except rospy.ServiceException as e:
+        logging.error(f"Service call failed: {e}")
+
 
 def stop_program():
-    rospy.wait_for_service('/ur_hardware_interface/dashboard/stop')
-    stop = rospy.ServiceProxy('/ur_hardware_interface/dashboard/stop', Trigger)
-    stop()
+    try:
+        rospy.wait_for_service("/ur_hardware_interface/dashboard/stop")
+        stop = rospy.ServiceProxy("/ur_hardware_interface/dashboard/stop", Trigger)
+        stop()
+    except rospy.ServiceException as e:
+        logging.error(f"Service call failed: {e}")
 
-def set_io(id, value = False):
-    rospy.wait_for_service('/ur_hardware_interface/set_io')
-    setio = rospy.ServiceProxy('/ur_hardware_interface/set_io', SetIO)
-    val = 1.0 if value==True else 0.0
-    setio(1, id, val)
 
-def freedrive_for_a_bit():
-    stop_program()
-    set_io(1,True)
-    rospy.sleep(0.5)
-    freedrive_pub.publish(1.0)
-    time.sleep(10.0)
-    set_io(1,False)
+def set_io(id, value=False):
+    try:
+        rospy.wait_for_service("/ur_hardware_interface/set_io")
+        setio = rospy.ServiceProxy("/ur_hardware_interface/set_io", SetIO)
+        val = 1.0 if value else 0.0
+        setio(1, id, val)
+    except rospy.ServiceException as e:
+        logging.error(f"Service call failed: {e}")
+
 
 def freedrive_on():
     stop_program()
-    set_io(1,True)
+    set_io(1, True)
     rospy.sleep(0.5)
     freedrive_pub.publish(1.0)
 
+
 def freedrive_off():
-    set_io(1,False)
+    set_io(1, False)
     rospy.sleep(0.5)
-    
-    
+
+
 def on_connect(client, userdata, flags, rc):
-    print("Connected with result code "+str(rc))
-    # Subscribing in on_connect() means that if we lose the connection and
+    logging.info(f"Connected with result code {rc}")
     client.subscribe(FREE_TOPIC)
+
 
 def on_message(client, userdata, message):
     global freedrive
     msg = message.payload.decode("utf-8")
     if msg.strip() == '"FREEDRIVE"':
         if not freedrive:
-            print('works')
             freedrive = True
-            print('yessssss')
             freedrive_on()
-
     elif msg.upper() == '"NO_FREEDRIVE"':
         if freedrive:
             freedrive = False
             freedrive_off()
-            print('nooooooo')
+
 
 def on_disconnect(client, userdata, rc):
-    print("Disconnected from MQTT broker.")
+    logging.info("Disconnected from MQTT broker.")
 
-if __name__ == '__main__':
-        # Create an MQTT client instance
+
+def handle_shutdown(signum, frame):
+    logging.info("Exiting...")
+    client.loop_stop()
+    client.disconnect()
+    rospy.signal_shutdown("KeyboardInterrupt")
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
+
     client = mqtt.Client()
-
-    # Assign event callbacks
     client.on_connect = on_connect
     client.on_message = on_message
     client.on_disconnect = on_disconnect
 
-    # Connect to the MQTT broker
-    client.connect(MQTT_SERVER, normal_port, 60)
-
-    # Start the MQTT client loop
-    client.loop_start()
-
     try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("Exiting...")
-        client.loop_stop()
-        client.disconnect()
+        client.connect(MQTT_SERVER, NORMAL_PORT, 60)
+        client.loop_start()
+    except Exception as e:
+        logging.error(f"Failed to connect to MQTT broker: {e}")
+        exit(1)
 
+    rospy.init_node("worker", anonymous=True)
+    freedrive_pub = rospy.Publisher(
+        "/ur_hardware_interface/enable_freedrive_mode", Float64, queue_size=10
+    )
+
+    # listener()
