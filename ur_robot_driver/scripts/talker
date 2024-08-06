@@ -149,7 +149,6 @@ class TrajectoryClient:
         velocity_list = []
         duration_list = []
         for config in configs:
-            print(config)
             position_list.append(config)
             velocity_list.append([0.05] * 6)
             duration_list.append(5.0 * (configs.index(config) + 1))
@@ -245,7 +244,7 @@ class TrajectoryClient:
     #                                                                                             #
     # Methods defined below are for the sake of safety / flexibility of this demo script only.    #
     # If you just want to copy the relevant parts to make your own motion script you don't have   #
-    # to use / copy all the functions below.                                                       #
+    # to use / copy all the functions below.                                                      #
     #                                                                                             #
     ###############################################################################################
 
