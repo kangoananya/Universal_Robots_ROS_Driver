@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-
 import rospy
 import json
 import time
@@ -14,12 +13,13 @@ from std_srvs.srv import Trigger
 # Configuration
 MQTT_SERVER = "test.mosquitto.org"
 FREE_TOPIC = "carpenters_robot/free"
-TCP_TOPIC = "carpenters_robot/tcp"
+TCP_TOPIC = "carpenters_robot/tcp" 
 IMAGE_TOPIC = "carpenters_robot/img"
 ID_TOPIC = "carpenters_robot/id"
 NICLAIOT_TOPIC = "carpenters_robot/iot"
 CONFIRM_TOPIC = "carpenters_robot/confirm"
 SPEED_TOPIC = "carpenters_robot/speed"
+COMMANDS_TOPIC = "carpenters_robot/commands"
 TLS_PORT = 8081
 NORMAL_PORT = 1883
 FILEPATH = "/home/github/crafts_extended/json/tcp_frames.json"
@@ -33,10 +33,11 @@ SET_IO_TOPIC = "/ur_hardware_interface/set_io"
 PLAY_TOPIC = "/ur_hardware_interface/dashboard/play"
 STOP_TOPIC = "/ur_hardware_interface/dashboard/stop"
 
-
 # Global Variables
+# MODES: 0 - DESIGN; 1 - ALIGN; 2 - NOFREE; 3 - MILLING
 freedrive_pub = None
 freedrive = False
+mode = 0
 
 # Setup logging
 logging.basicConfig(
@@ -44,37 +45,18 @@ logging.basicConfig(
 )
 
 
-def tf_callback(data):
+def listen_tcp(id):
     """
-    Callback function for processing TF data.
-
-    Args:
-        data: The TF data received.
-
-    Raises:
-        Exception: If there is an error in processing the TF data.
-
-    Returns:
-        None
+    Listens to the "/tf" topic
     """
-    try:
-        tcp_frame = {
+    data = rospy.wait_for_message(TOOLFRAME_TOPIC, TFMessage)
+    tcp_frame = {
+            "id": id,
             "position": data.transforms[0].transform.translation,
-            "rotation": data.transforms[0].transform.rotation,
         }
-        with open(FILEPATH, "w") as f:
-            json.dump(tcp_frame, f)
-        rospy.signal_shutdown("Data saved")
-    except Exception as e:
-        logging.error(f"Error in tf_callback: {e}")
+    rospy.loginfo(tcp_frame)
 
 
-def listener():
-    """
-    Subscribes to the "/tf" topic and calls the tf_callback function when a message is received.
-    """
-    rospy.Subscriber(TOOLFRAME_TOPIC, TFMessage, tf_callback)
-    rospy.spin()
 
 
 def set_speed(speed):
@@ -194,9 +176,24 @@ def on_connect(client, userdata, flags, rc):
     Returns:
         None
     """
-    logging.info(f"Connected with result code {rc}")
+    rospy.loginfo(f"Connected with result code {rc}")
     client.subscribe(FREE_TOPIC)
 
+
+def on_message_design_align(client, userdata, message):
+    """
+    Callback for handling messages in mode 0.
+    """
+    rospy.loginfo(f"Design-Align mode message received: {message.payload.decode('utf-8')}")
+    listen_tcp(message.payload.decode('utf-8'))
+    # Add specific actions for mode 0
+
+def on_message_fabrication(client, userdata, message):
+    """
+    Callback for handling messages in mode 3.
+    """
+    rospy.loginfo(f"Fabbrication mode message received: {message.payload.decode('utf-8')}")
+    # Add specific actions for mode 1
 
 def on_message(client, userdata, message):
     """
@@ -210,16 +207,34 @@ def on_message(client, userdata, message):
     Returns:
     None
     """
-    global freedrive
+    global mode, freedrive
     msg = message.payload.decode("utf-8")
-    if msg.strip() == '"FREEDRIVE"':
+    rospy.loginfo(f"Received message: {msg}")
+    mode = str(msg)  # Assuming mode is sent as an integer string
+    
+    mode = '0' if msg == '"NO_FREEDRIVE"' else '2'
+
+    if mode == '0' or mode == '1':
+        rospy.loginfo_once("switched mode")
+        client.message_callback_add(TCP_TOPIC, on_message_design_align)
+        client.subscribe(TCP_TOPIC)
+        rospy.loginfo("Switched to alignment and design mode")
+
+    elif mode == '3':
+        client.message_callback_add(COMMANDS_TOPIC, on_message_fabrication)
+        client.subscribe(COMMANDS_TOPIC)
+        rospy.loginfo("Switched to fabrication mode")
+
+    if msg == '0' or msg == '1':
         if not freedrive:
             freedrive = True
             freedrive_on()
-    elif msg.upper() == '"NO_FREEDRIVE"':
+    elif msg == '2':
         if freedrive:
             freedrive = False
             freedrive_off()
+    else:
+        pass
 
 
 def on_disconnect(client, userdata, rc):
@@ -234,7 +249,7 @@ def on_disconnect(client, userdata, rc):
     Returns:
         None
     """
-    logging.info("Disconnected from MQTT broker.")
+    rospy.loginfo("Disconnected from MQTT broker.")
 
 
 def handle_shutdown(signum, frame):
@@ -248,7 +263,7 @@ def handle_shutdown(signum, frame):
     Returns:
         None
     """
-    logging.info("Exiting...")
+    rospy.loginfo("Exiting...")
     client.loop_stop()
     client.disconnect()
     rospy.signal_shutdown("KeyboardInterrupt")
@@ -265,14 +280,18 @@ if __name__ == "__main__":
 
     try:
         client.connect(MQTT_SERVER, NORMAL_PORT, 60)
+        time.sleep(0.1)
         client.loop_start()
     except Exception as e:
         logging.error(f"Failed to connect to MQTT broker: {e}")
         exit(1)
 
     rospy.init_node("worker", anonymous=True)
+    
     freedrive_pub = rospy.Publisher(
         FREEDRIVE_TOPIC, Float64, queue_size=10
     )
 
+
+    rospy.spin()
     # listener()
