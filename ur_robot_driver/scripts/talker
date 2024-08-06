@@ -10,19 +10,24 @@ from std_msgs.msg import Float64
 from ur_msgs.srv import SetSpeedSliderFraction, SetIO
 from std_srvs.srv import Trigger
 
+from move_toolpath import TrajectoryClient
+
 # Configuration
 MQTT_SERVER = "test.mosquitto.org"
-FREE_TOPIC = "carpenters_robot/free"
+MODE_TOPIC = "carpenters_robot/mode"
 TCP_TOPIC = "carpenters_robot/tcp" 
 IMAGE_TOPIC = "carpenters_robot/img"
 ID_TOPIC = "carpenters_robot/id"
 NICLAIOT_TOPIC = "carpenters_robot/iot"
-CONFIRM_TOPIC = "carpenters_robot/confirm"
 SPEED_TOPIC = "carpenters_robot/speed"
 COMMANDS_TOPIC = "carpenters_robot/commands"
 TLS_PORT = 8081
 NORMAL_PORT = 1883
-FILEPATH = "/home/github/crafts_extended/json/tcp_frames.json"
+
+# Filepaths
+DESIGN_FILEPATH = "/home/github/crafts_extended/json/design_frames.json"
+ALIGNMENT_FILEPATH = "/home/github/crafts_extended/json/alignment_frames.json"
+TOOLPATH = "/home/github/crafts_extended/json/toolpath.json"
 
 # ROS Topics
 TOOLFRAME_TOPIC = "/tf"
@@ -37,7 +42,7 @@ STOP_TOPIC = "/ur_hardware_interface/dashboard/stop"
 # MODES: 0 - DESIGN; 1 - ALIGN; 2 - NOFREE; 3 - MILLING
 freedrive_pub = None
 freedrive = False
-mode = 0
+cur_mode = 0
 
 # Setup logging
 logging.basicConfig(
@@ -54,9 +59,27 @@ def listen_tcp(id):
             "id": id,
             "position": data.transforms[0].transform.translation,
         }
+    
+    if cur_mode == 0:
+        # Save the design TCP frame to with the received id to a JSON file
+        with open(DESIGN_FILEPATH, "w") as f:
+            json.dump(tcp_frame, f)
+    else:
+        # Save the alignment TCP frame to a JSON file with assigned id based on count in JSON file
+        with open(ALIGNMENT_FILEPATH, "r") as f:
+            data = json.load(f)
+            # if json has data, get the last id and increment by 1
+            if data:
+                id = data[-1]["id"] + 1
+            else:
+                id = 0
+            tcp_frame["id"] = id
+            data.append(tcp_frame)
+        with open(ALIGNMENT_FILEPATH, "w") as f:
+            json.dump(data, f)
+
+    rospy.sleep(0.5) # Wait for 0.5 seconds
     rospy.loginfo(tcp_frame)
-
-
 
 
 def set_speed(speed):
@@ -177,7 +200,7 @@ def on_connect(client, userdata, flags, rc):
         None
     """
     rospy.loginfo(f"Connected with result code {rc}")
-    client.subscribe(FREE_TOPIC)
+    client.subscribe(MODE_TOPIC)
 
 
 def on_message_design_align(client, userdata, message):
@@ -192,8 +215,23 @@ def on_message_fabrication(client, userdata, message):
     """
     Callback for handling messages in mode 3.
     """
-    rospy.loginfo(f"Fabbrication mode message received: {message.payload.decode('utf-8')}")
-    # Add specific actions for mode 1
+    rospy.loginfo(f"Fabrication mode message received: {message.payload.decode('utf-8')}")
+    # Add specific actions for mode 3
+    play_program()
+    rospy.sleep(0.5)
+    set_speed(1.0)
+    rospy.sleep(0.5)
+    mover = TrajectoryClient()
+
+    with open(TOOLPATH, "r") as f:
+        toolpath = json.load(f)
+
+    config = toolpath[0]
+
+    mover.send_joint_trajectory([config])
+    mover.send_cartesian_trajectory(trajectory = toolpath[2:])
+
+    
 
 def on_message(client, userdata, message):
     """
@@ -209,21 +247,22 @@ def on_message(client, userdata, message):
     """
     global mode, freedrive
     msg = message.payload.decode("utf-8")
-    rospy.loginfo(f"Received message: {msg}")
     mode = str(msg)  # Assuming mode is sent as an integer string
-    
-    mode = '0' if msg == '"NO_FREEDRIVE"' else '2'
 
     if mode == '0' or mode == '1':
-        rospy.loginfo_once("switched mode")
         client.message_callback_add(TCP_TOPIC, on_message_design_align)
         client.subscribe(TCP_TOPIC)
         rospy.loginfo("Switched to alignment and design mode")
-
+        cur_mode = mode
+        set_io(0, False)
+        rospy.sleep(0.5)
     elif mode == '3':
         client.message_callback_add(COMMANDS_TOPIC, on_message_fabrication)
         client.subscribe(COMMANDS_TOPIC)
         rospy.loginfo("Switched to fabrication mode")
+        cur_mode = mode
+    else:
+        pass # retain current mode
 
     if msg == '0' or msg == '1':
         if not freedrive:
@@ -235,6 +274,8 @@ def on_message(client, userdata, message):
             freedrive_off()
     else:
         pass
+
+    rospy.loginfo("Current mode: %s", cur_mode)
 
 
 def on_disconnect(client, userdata, rc):
@@ -291,7 +332,6 @@ if __name__ == "__main__":
     freedrive_pub = rospy.Publisher(
         FREEDRIVE_TOPIC, Float64, queue_size=10
     )
-
 
     rospy.spin()
     # listener()

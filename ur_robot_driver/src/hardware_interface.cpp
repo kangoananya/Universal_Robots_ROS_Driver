@@ -958,7 +958,7 @@ void HardwareInterface::extractToolPose(const ros::Time& timestamp)
 void HardwareInterface::publishPose()
 {
   if (tcp_pose_pub_)
-  {.srv
+  {
     if (tcp_pose_pub_->trylock())
     {
       tcp_pose_pub_->msg_.transforms.clear();

@@ -150,7 +150,7 @@ install(TARGETS ur_robot_driver_plugin urcl_log_handler ur_robot_driver_node rob
 catkin_install_python(PROGRAMS scripts/tool_communication 
   scripts/test_move
   scripts/talker
-  scripts/sender
+  scripts/move_toolpath.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
 install(DIRECTORY config launch resources
