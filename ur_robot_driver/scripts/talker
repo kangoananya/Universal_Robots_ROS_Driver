@@ -146,6 +146,47 @@ def update_alignment(mesh_ID="default", pts=[0, 0, 0], marker_ids=["1", "2", "3"
 #                               Trajectory controllers                                          #
 #                                                                                               #
 #################################################################################################
+alignment_pts = []
+
+#################################################################################################
+#################################################################################################
+#                                                                                               #
+#                                 Firebase related functions                                    #
+#                                                                                               #
+#################################################################################################
+
+# set database paths
+alignment = "alignment/"
+actual_member = "actual_member/"
+design_list = "design_list/"
+
+
+# Initialize the Firebase app
+firebase = pyrebase.initialize_app(config)
+db = firebase.database()
+
+
+# Function to set data in Realtime Database
+def set_data_in_realtime_db(reference, data):
+    db.child(reference).set(data)
+
+
+def set_alignment():
+    data = {"ID": "", "coordinates": [0, 0, 0]}
+    set_data_in_realtime_db(alignment, data)
+
+
+def update_alignment(mesh_ID="default", pts=[0, 0, 0], marker_ids=["1", "2", "3"]):
+    db.child(alignment).child("ID").set(mesh_ID)
+    for pt, marker in zip(pts, marker_ids):
+        db.child(alignment).child("coordinates").child(marker).set(pt)
+
+
+#################################################################################################
+#                                                                                               #
+#                               Trajectory controllers                                          #
+#                                                                                               #
+#################################################################################################
 
 
 class TrajectoryClient:
