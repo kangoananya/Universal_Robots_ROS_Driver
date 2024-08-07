@@ -333,7 +333,8 @@ bool HardwareInterface::init(ros::NodeHandle& root_nh, ros::NodeHandle& robot_hw
   // end
   command_sub_ = robot_hw_nh.subscribe("script_command", 1, &HardwareInterface::commandCallback, this);
 
- freedrive_sub_ = robot_hw_nh.subscribe("enable_freedrive_mode", 1, &HardwareInterface::freedriveCallback, this);
+  freedrive_sub_ = robot_hw_nh.subscribe("enable_freedrive_mode", 1, &HardwareInterface::freedriveCallback, this);
+  set_tcp_sub_ = robot_hw_nh.subscribe("set_tcp", 1, &HardwareInterface::setTCPCallback, this);
   // Names of the joints. Usually, this is given in the controller config file.
   if (!robot_hw_nh.getParam("joints", joint_names_))
   {
@@ -1225,6 +1226,31 @@ void HardwareInterface::freedriveCallback(const std_msgs::Float64Ptr& msg)
   else
   {
     ROS_ERROR_STREAM("Error sending freedrive mode script to robot");
+  }
+}
+
+void HardwareInterface::setTCPCallback(const std_msgs::Float64MultiArrayConstPtr& msg)
+{
+  std::stringstream tcp_script;
+  tcp_script << "def setTCPProgram():\n";
+  tcp_script << "\t set_tcp(p[" << msg->data[0] << ", " << msg->data[1] << ", " << msg->data[2] << ", " << msg->data[3]
+             << ", " << msg->data[4] << ", " << msg->data[5] << "])\n";
+  tcp_script << "end\n";
+
+  if (ur_driver_ == nullptr)
+  {
+    throw std::runtime_error("Trying to use the ur_driver_ member before it is initialized. This should not happen, "
+                             "please contact the package maintainer.");
+  }
+
+  if (ur_driver_->sendScript(tcp_script.str()))
+  {
+    ROS_WARN_STREAM("Sent TCP script to robot - you will have to restart the External Control program.");
+    ROS_DEBUG_STREAM("TCP script: " << tcp_script.str());
+  }
+  else
+  {
+    ROS_ERROR_STREAM("Error sending TCP setter script to robot");
   }
 }
 

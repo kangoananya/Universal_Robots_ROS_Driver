@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <std_msgs/Bool.h>
 #include <std_msgs/Float64.h>
+#include <std_msgs/Float64MultiArray.h>
 #include <std_msgs/String.h>
 #include <std_srvs/Trigger.h>
 #include <std_srvs/SetBool.h>
@@ -214,8 +215,11 @@ protected:
   bool zeroFTSensor(std_srvs::TriggerRequest& req, std_srvs::TriggerResponse& res);
   void commandCallback(const std_msgs::StringConstPtr& msg);
   void freedriveCallback(const std_msgs::Float64Ptr& msg);
+  // TCP callback as float64 multiarray
+  void setTCPCallback(const std_msgs::Float64MultiArrayConstPtr& msg);
   bool setPayload(ur_msgs::SetPayloadRequest& req, ur_msgs::SetPayloadResponse& res);
   bool activateSplineInterpolation(std_srvs::SetBoolRequest& req, std_srvs::SetBoolResponse& res);
+
 
   std::unique_ptr<urcl::UrDriver> ur_driver_;
   std::unique_ptr<DashboardClientROS> dashboard_client_;
@@ -319,6 +323,7 @@ protected:
   ros::ServiceServer resend_robot_program_srv_;
   ros::Subscriber command_sub_;
   ros::Subscriber freedrive_sub_;
+  ros::Subscriber set_tcp_sub_;
 
   industrial_robot_status_interface::RobotStatus robot_status_resource_{};
   industrial_robot_status_interface::IndustrialRobotStatusInterface robot_status_interface_{};

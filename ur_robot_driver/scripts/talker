@@ -7,7 +7,7 @@ import signal
 
 import paho.mqtt.client as mqtt
 from tf2_msgs.msg import TFMessage
-from std_msgs.msg import Float64
+from std_msgs.msg import Float64, Float64MultiArray
 from ur_msgs.srv import SetSpeedSliderFraction, SetIO
 from std_srvs.srv import Trigger
 import actionlib
@@ -78,7 +78,7 @@ MODE_TOPIC = "carpenters_robot/mode"
 TCP_TOPIC = "carpenters_robot/tcp"
 IMAGE_TOPIC = "carpenters_robot/img"
 ID_TOPIC = "carpenters_robot/id"
-NICLAIOT_TOPIC = "carpenters_robot/iot"
+STATUS_TOPIC = "carpenters_robot/status"
 SPEED_TOPIC = "carpenters_robot/speed"
 COMMANDS_TOPIC = "carpenters_robot/commands"
 TLS_PORT = 8081
@@ -93,6 +93,8 @@ FIREBASE_CRED_PATH = "/home/github/crafts_extended/json/crafts-extended-firebase
 # ROS Topics
 TOOLFRAME_TOPIC = "/tf"
 FREEDRIVE_TOPIC = "/ur_hardware_interface/enable_freedrive_mode"
+SET_TCP_TOPIC = "/ur_hardware_interface/set_tcp"
+
 # Services
 SET_SPEED_TOPIC = "/ur_hardware_interface/set_speed_slider"
 SET_IO_TOPIC = "/ur_hardware_interface/set_io"
@@ -105,6 +107,20 @@ freedrive_pub = None
 freedrive = False
 cur_mode = 0
 
+# TCP Values
+spike = Float64MultiArray(data=[0.00886, -0.00011, 0.13213, 0.0, 0.0, 0.0])
+# spike = geometry_msgs.Pose(
+#     geometry_msgs.Vector3(0.00886, -0.00011, 0.13213),
+#     geometry_msgs.Quaternion(0.0, 0.0, 0.0, 0.0),
+# )
+
+mill = Float64MultiArray(data=[0.00039, -0.18526, 0.05212, -1.2090, -1.2090, -1.2090])
+# mill = geometry_msgs.Pose(
+#     geometry_msgs.Vector3(0.00039, -0.18526, 0.05212),
+#     geometry_msgs.Quaternion(0.0, 0.0, 0.0, 0.0),
+# )
+# 8.86,-0.11, 132.13, 0.0, 0.0, 0.0
+
 alignment_pts = []
 
 #################################################################################################
@@ -135,52 +151,28 @@ def set_alignment():
     set_data_in_realtime_db(alignment, data)
 
 
-def update_alignment(mesh_ID="default", pts=[0, 0, 0], marker_ids=["1", "2", "3"]):
-    db.child(alignment).child("ID").set(mesh_ID)
-    for pt, marker in zip(pts, marker_ids):
-        db.child(alignment).child("coordinates").child(marker).set(pt)
-
-
-#################################################################################################
-#                                                                                               #
-#                               Trajectory controllers                                          #
-#                                                                                               #
-#################################################################################################
-alignment_pts = []
-
-#################################################################################################
-#################################################################################################
-#                                                                                               #
-#                                 Firebase related functions                                    #
-#                                                                                               #
-#################################################################################################
-
-# set database paths
-alignment = "alignment/"
-actual_member = "actual_member/"
-design_list = "design_list/"
-
-
-# Initialize the Firebase app
-firebase = pyrebase.initialize_app(config)
-db = firebase.database()
-
-
-# Function to set data in Realtime Database
-def set_data_in_realtime_db(reference, data):
-    db.child(reference).set(data)
-
-
-def set_alignment():
-    data = {"ID": "", "coordinates": [0, 0, 0]}
-    set_data_in_realtime_db(alignment, data)
-
+def get_current_design_id():
+    member = db.child(actual_member).child("member_name").get().val()
+    # doer snot have keys
+    if member not in db.child(design_list).get().val():
+        # set the member to the actual member
+        return "000"
+    return list(db.child(design_list).child(member).get().val())[-1]
 
 def update_alignment(mesh_ID="default", pts=[0, 0, 0], marker_ids=["1", "2", "3"]):
     db.child(alignment).child("ID").set(mesh_ID)
+    db.child(alignment).child("coordinates").set("")
     for pt, marker in zip(pts, marker_ids):
         db.child(alignment).child("coordinates").child(marker).set(pt)
 
+def update_design(pt=[0, 0, 0], id="000"):
+    member = db.child(actual_member).child("member_name").get().val()
+    print(type(member))
+    db.child(design_list).child(member).child(id).child("mesured").set(pt)
+
+def get_actual_toolpath():
+    member = db.child(actual_member).child("member_name").get().val()
+    return db.child("toolpath").child(member).get().val()
 
 #################################################################################################
 #                                                                                               #
@@ -193,7 +185,6 @@ class TrajectoryClient:
     """Small trajectory client to test a joint trajectory"""
 
     def __init__(self):
-        rospy.init_node("test_move")
 
         timeout = rospy.Duration(5)
         self.switch_srv = rospy.ServiceProxy(
@@ -291,7 +282,7 @@ class TrajectoryClient:
         pose_list = []
         time_list = []
 
-        for point in trajectory:
+        for i, point in enumerate(trajectory):
             pose_list.append(
                 geometry_msgs.Pose(
                     geometry_msgs.Vector3(
@@ -301,6 +292,7 @@ class TrajectoryClient:
                 )
             )
             time_list.append(point["timestamp"])
+
 
         for pose, time in zip(pose_list, time_list):
             trajectory_point = CartesianTrajectoryPoint()
@@ -411,11 +403,14 @@ def listen_tcp(id):
             data.transforms[0].transform.translation.z,
         ],
     }
-
     if cur_mode == "0":
         # Save the design TCP frame to with the received id to a JSON file
-        pass
+        update_design(pt=tcp_frame["position"], id=design_id)
+        
     elif cur_mode == "1":
+        # if mode is already 1 then append if mode just got changed to 1 then clear the list
+        if len(alignment_pts) == 3:
+            alignment_pts.clear()
         # Save the alignment TCP frame to a JSON file with assigned id based on count in JSON file
         alignment_pts.append(tcp_frame)
 
@@ -506,6 +501,20 @@ def set_io(id, value=False):
         rospy.ERROR(f"Service call failed: {e}")
 
 
+def set_tcp(pose):
+    """
+    Sets the TCP of the robot to the given pose.
+
+    Args:
+        pose (geometry_msgs.Pose): The pose to set the TCP to.
+
+    Returns:
+        None
+    """
+    set_tcp_pub.publish(pose)
+    rospy.sleep(0.5)
+
+
 def freedrive_on():
     """
     Enables the freedrive mode on the robot.
@@ -550,6 +559,12 @@ def on_connect(client, userdata, flags, rc):
     """
     rospy.loginfo(f"Connected with result code {rc}")
     client.subscribe(MODE_TOPIC)
+    # Publish ROS Node connected to MQTT
+    client.publish(STATUS_TOPIC, "Connected to MQTT")
+    rospy.sleep(1.0)
+    # set_tcp(spike)
+    rospy.sleep(1.0)
+
 
 
 def on_message_design_align(client, userdata, message):
@@ -571,19 +586,22 @@ def on_message_fabrication(client, userdata, message):
         f"Fabrication mode message received: {message.payload.decode('utf-8')}"
     )
     # Add specific actions for mode 3
+    rospy.sleep(1.0)
+    # set_tcp(mill)
+    rospy.sleep(1.0)
+    # Add specific actions for mode 3
     play_program()
     rospy.sleep(0.5)
-    set_speed(1.0)
+    set_speed(0.3)
     rospy.sleep(0.5)
     mover = TrajectoryClient()
 
-    with open(TOOLPATH, "r") as f:
-        toolpath = json.load(f)
+    toolpath = json.loads(get_actual_toolpath())
 
-    config = toolpath[0]
+    config = toolpath[1]["data"]["joint_values"]
 
     mover.send_joint_trajectory([config])
-    mover.send_cartesian_trajectory(trajectory=toolpath[2:])
+    mover.send_cartesian_trajectory(trajectory=toolpath[3:])
 
 
 def on_message(client, userdata, message):
@@ -598,17 +616,20 @@ def on_message(client, userdata, message):
     Returns:
     None
     """
-    global mode, freedrive, cur_mode
+    global mode, freedrive, cur_mode, design_id
     msg = message.payload.decode("utf-8")
     mode = str(msg)  # Assuming mode is sent as an integer string
-
+        
     if mode == "0" or mode == "1":
+        if mode == "0":
+            design_id = str((int(get_current_design_id())+1)).zfill(3)
+            client.publish(ID_TOPIC, design_id) 
+            rospy.sleep(0.5)  
         client.message_callback_add(TCP_TOPIC, on_message_design_align)
         client.subscribe(TCP_TOPIC)
         rospy.loginfo("Switched to alignment and design mode")
         cur_mode = mode
         set_io(0, False)
-        rospy.sleep(0.5)
     elif mode == "3":
         client.message_callback_add(COMMANDS_TOPIC, on_message_fabrication)
         client.subscribe(COMMANDS_TOPIC)
@@ -616,8 +637,8 @@ def on_message(client, userdata, message):
         cur_mode = mode
     else:
         pass  # retain current mode
-
-    if mode == "0" or mode == "1":
+    
+    if mode == "0" or mode == "1": 
         rospy.loginfo("Freedrving")
         if not freedrive:
             freedrive = True
@@ -684,6 +705,9 @@ if __name__ == "__main__":
     rospy.init_node("worker", anonymous=True)
 
     freedrive_pub = rospy.Publisher(FREEDRIVE_TOPIC, Float64, queue_size=10)
+    set_tcp_pub = rospy.Publisher(SET_TCP_TOPIC, Float64MultiArray, queue_size=10)
+
+    rospy.sleep(0.5)
 
     rospy.spin()
     # listener()
