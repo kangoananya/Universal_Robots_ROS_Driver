@@ -2,6 +2,7 @@ import sys
 
 import rospy
 import actionlib
+from std_msgs.msg import Float64MultiArray
 from control_msgs.msg import FollowJointTrajectoryAction, FollowJointTrajectoryGoal
 from trajectory_msgs.msg import JointTrajectoryPoint
 from controller_manager_msgs.srv import SwitchControllerRequest, SwitchController
@@ -13,11 +14,26 @@ from cartesian_control_msgs.msg import (
     FollowCartesianTrajectoryGoal,
     CartesianTrajectoryPoint,
 )
+import os 
+import pyrebase
+import json
+
+api_key = os.getenv("API_KEY")
+if api_key is None:
+    raise ValueError("No API key found. Please set the API_KEY environment variable.")
 
 
 # Compatibility for python2 and python3
 if sys.version_info[0] < 3:
     input = raw_input
+
+# Configure the Firebase app
+config = {
+    "apiKey": api_key,
+    "authDomain": "crafts-extended.firebaseapp.com",
+    "databaseURL": "https://crafts-extended-default-rtdb.europe-west1.firebasedatabase.app",
+    "storageBucket": "crafts-extended.appspot.com",
+}
 
 # If your robot description is created with a tf_prefix, those would have to be adapted
 JOINT_NAMES = [
@@ -51,23 +67,135 @@ CARTESIAN_TRAJECTORY_CONTROLLERS = [
 # be conflicting with the joint trajectory controllers
 CONFLICTING_CONTROLLERS = ["joint_group_vel_controller", "twist_controller"]
 
+# Configuration
+MQTT_SERVER = "test.mosquitto.org"
+MODE_TOPIC = "carpenters_robot/mode"
+TCP_TOPIC = "carpenters_robot/tcp"
+IMAGE_TOPIC = "carpenters_robot/img"
+ID_TOPIC = "carpenters_robot/id"
+STATUS_TOPIC = "carpenters_robot/status"
+SPEED_TOPIC = "carpenters_robot/speed"
+COMMANDS_TOPIC = "carpenters_robot/commands"
+TLS_PORT = 8081
+NORMAL_PORT = 1883
+
+# Filepaths
+DESIGN_FILEPATH = "/home/github/crafts_extended/json/design_frames.json"
+ALIGNMENT_FILEPATH = "/home/github/crafts_extended/json/alignment_frames.json"
+TOOLPATH = "/home/github/crafts_extended/json/toolpath.json"
+FIREBASE_CRED_PATH = "/home/github/crafts_extended/json/crafts-extended-firebase-adminsdk-9by4u-dbb1c0b4e9.json"
+
+# ROS Topics
+TOOLFRAME_TOPIC = "/tf"
+FREEDRIVE_TOPIC = "/ur_hardware_interface/enable_freedrive_mode"
+SET_TCP_TOPIC = "/ur_hardware_interface/set_tcp"
+
+# Services
+SET_SPEED_TOPIC = "/ur_hardware_interface/set_speed_slider"
+SET_IO_TOPIC = "/ur_hardware_interface/set_io"
+PLAY_TOPIC = "/ur_hardware_interface/dashboard/play"
+STOP_TOPIC = "/ur_hardware_interface/dashboard/stop"
+
+# Global Variables
+# MODES: 0 - DESIGN; 1 - ALIGN; 2 - NOFREE; 3 - MILLING
+freedrive_pub = None
+freedrive = False
+cur_mode = 0
+
+# TCP Values
+spike = Float64MultiArray(data=[0.00886, -0.00011, 0.13213, 0.0, 0.0, 0.0])
+# spike = geometry_msgs.Pose(
+#     geometry_msgs.Vector3(0.00886, -0.00011, 0.13213),
+#     geometry_msgs.Quaternion(0.0, 0.0, 0.0, 0.0),
+# )
+
+mill = Float64MultiArray(data=[0.00039, -0.18526, 0.05212, -1.2090, -1.2090, -1.2090])
+# mill = geometry_msgs.Pose(
+#     geometry_msgs.Vector3(0.00039, -0.18526, 0.05212),
+#     geometry_msgs.Quaternion(0.0, 0.0, 0.0, 0.0),
+# )
+# 8.86,-0.11, 132.13, 0.0, 0.0, 0.0
+
+alignment_pts = []
+
+#################################################################################################
+#################################################################################################
+#                                                                                               #
+#                                 Firebase related functions                                    #
+#                                                                                               #
+#################################################################################################
+
+# set database paths
+alignment = "alignment/"
+actual_member = "actual_member/"
+design_list = "design_list/"
+
+
+# Initialize the Firebase app
+firebase = pyrebase.initialize_app(config)
+db = firebase.database()
+
+
+# Function to set data in Realtime Database
+def set_data_in_realtime_db(reference, data):
+    db.child(reference).set(data)
+
+
+def set_alignment():
+    data = {"ID": "", "coordinates": [0, 0, 0]}
+    set_data_in_realtime_db(alignment, data)
+
+
+def get_current_design_id():
+    member = db.child(actual_member).child("member_name").get().val()
+    # doer snot have keys
+    if member not in db.child(design_list).get().val():
+        # set the member to the actual member
+        return "000"
+    return list(db.child(design_list).child(member).get().val())[-1]
+
+def update_alignment(mesh_ID="default", pts=[0, 0, 0], marker_ids=["1", "2", "3"]):
+    db.child(alignment).child("ID").set(mesh_ID)
+    db.child(alignment).child("coordinates").set("")
+    for pt, marker in zip(pts, marker_ids):
+        db.child(alignment).child("coordinates").child(marker).set(pt)
+
+def update_design(pt=[0, 0, 0], id="000"):
+    member = db.child(actual_member).child("member_name").get().val()
+    print(type(member))
+    db.child(design_list).child(member).child(id).child("mesured").set(pt)
+
+def get_actual_toolpath():
+    member = db.child(actual_member).child("member_name").get().val()
+    return db.child("toolpath").child(member).get().val()
+
+#################################################################################################
+#                                                                                               #
+#                               Trajectory controllers                                          #
+#                                                                                               #
+#################################################################################################
+
 
 class TrajectoryClient:
     """Small trajectory client to test a joint trajectory"""
 
     def __init__(self):
-        rospy.init_node("test_move")
-
         timeout = rospy.Duration(5)
         self.switch_srv = rospy.ServiceProxy(
             "controller_manager/switch_controller", SwitchController
         )
-        self.load_srv = rospy.ServiceProxy("controller_manager/load_controller", LoadController)
-        self.list_srv = rospy.ServiceProxy("controller_manager/list_controllers", ListControllers)
+        self.load_srv = rospy.ServiceProxy(
+            "controller_manager/load_controller", LoadController
+        )
+        self.list_srv = rospy.ServiceProxy(
+            "controller_manager/list_controllers", ListControllers
+        )
         try:
             self.switch_srv.wait_for_service(timeout.to_sec())
         except rospy.exceptions.ROSException as err:
-            rospy.logerr("Could not reach controller switch service. Msg: {}".format(err))
+            rospy.logerr(
+                "Could not reach controller switch service. Msg: {}".format(err)
+            )
             sys.exit(-1)
 
         self.joint_trajectory_controller = JOINT_TRAJECTORY_CONTROLLERS[0]
@@ -99,10 +227,9 @@ class TrajectoryClient:
         velocity_list = []
         duration_list = []
         for config in configs:
-            print(config)
             position_list.append(config)
-            velocity_list.append([0.05]*6)
-            duration_list.append(5.0*(configs.index(config)+1))
+            velocity_list.append([0.05] * 6)
+            duration_list.append(5.0 * (configs.index(config) + 1))
 
         for i, position in enumerate(position_list):
             point = JointTrajectoryPoint()
@@ -110,15 +237,19 @@ class TrajectoryClient:
             point.velocities = velocity_list[i]
             point.time_from_start = rospy.Duration(duration_list[i])
             goal.trajectory.points.append(point)
-        
+
         self.ask_confirmation(position_list)
-        rospy.loginfo("Executing trajectory using the {}".format(self.joint_trajectory_controller))
+        rospy.loginfo(
+            "Executing trajectory using the {}".format(self.joint_trajectory_controller)
+        )
 
         trajectory_client.send_goal(goal)
         trajectory_client.wait_for_result()
 
         result = trajectory_client.get_result()
-        rospy.loginfo("Trajectory execution finished in state {}".format(result.error_code))
+        rospy.loginfo(
+            "Trajectory execution finished in state {}".format(result.error_code)
+        )
 
     def send_cartesian_trajectory(self, trajectory):
         """Creates a Cartesian trajectory and sends it using the selected action server"""
@@ -128,7 +259,9 @@ class TrajectoryClient:
         goal = FollowCartesianTrajectoryGoal()
 
         trajectory_client = actionlib.SimpleActionClient(
-            "{}/follow_cartesian_trajectory".format(self.cartesian_trajectory_controller),
+            "{}/follow_cartesian_trajectory".format(
+                self.cartesian_trajectory_controller
+            ),
             FollowCartesianTrajectoryAction,
         )
 
@@ -143,19 +276,29 @@ class TrajectoryClient:
         pose_list = []
         time_list = []
 
-        for point in trajectory:
-            pose_list.append(geometry_msgs.Pose(
-                geometry_msgs.Vector3(point['point'][0], point['point'][1], point['point'][2]),
-                geometry_msgs.Quaternion(*point['orientation'])
+        for i, point in enumerate(trajectory):
+            pose_list.append(
+                geometry_msgs.Pose(
+                    geometry_msgs.Vector3(
+                        point["point"][0], point["point"][1], point["point"][2]
+                    ),
+                    geometry_msgs.Quaternion(*point["orientation"]),
+                )
             )
-            )
-            time_list.append(point['timestamp'])
-        
-        for pose,time in zip(pose_list, time_list):
+            time_list.append(point["timestamp"])
+
+
+        for pose, time in zip(pose_list, time_list):
             trajectory_point = CartesianTrajectoryPoint()
             trajectory_point.pose = pose
-            trajectory_point.twist = geometry_msgs.Twist(linear = geometry_msgs.Vector3(0.005,0.005,0.005), angular = geometry_msgs.Vector3(0.005,0.005,0.005))
-            trajectory_point.acceleration = geometry_msgs.Accel(linear = geometry_msgs.Vector3(0.005,0.005,0.005), angular = geometry_msgs.Vector3(0.005,0.005,0.005))
+            trajectory_point.twist = geometry_msgs.Twist(
+                linear=geometry_msgs.Vector3(0.005, 0.005, 0.005),
+                angular=geometry_msgs.Vector3(0.005, 0.005, 0.005),
+            )
+            trajectory_point.acceleration = geometry_msgs.Accel(
+                linear=geometry_msgs.Vector3(0.005, 0.005, 0.005),
+                angular=geometry_msgs.Vector3(0.005, 0.005, 0.005),
+            )
             trajectory_point.time_from_start = rospy.Duration(time)
 
             goal.trajectory.points.append(trajectory_point)
@@ -163,27 +306,33 @@ class TrajectoryClient:
         self.ask_confirmation(pose_list)
 
         rospy.loginfo(
-            "Executing trajectory using the {}".format(self.cartesian_trajectory_controller)
+            "Executing trajectory using the {}".format(
+                self.cartesian_trajectory_controller
+            )
         )
         trajectory_client.send_goal(goal)
         trajectory_client.wait_for_result()
 
         result = trajectory_client.get_result()
 
-        rospy.loginfo("Trajectory execution finished in state {}".format(result.error_code))
+        rospy.loginfo(
+            "Trajectory execution finished in state {}".format(result.error_code)
+        )
 
     ###############################################################################################
     #                                                                                             #
     # Methods defined below are for the sake of safety / flexibility of this demo script only.    #
     # If you just want to copy the relevant parts to make your own motion script you don't have   #
-    # to use / copy all the functions below.                                                       #
+    # to use / copy all the functions below.                                                      #
     #                                                                                             #
     ###############################################################################################
 
     def ask_confirmation(self, waypoint_list):
         """Ask the user for confirmation. This function is obviously not necessary, but makes sense
         in a testing script when you know nothing about the user's setup."""
-        rospy.logwarn("The robot will move to the following waypoints: \n{}".format(waypoint_list))
+        rospy.logwarn(
+            "The robot will move to the following waypoints: \n{}".format(waypoint_list)
+        )
         confirmed = False
         valid = False
         while not valid:
@@ -200,40 +349,6 @@ class TrajectoryClient:
         if not confirmed:
             rospy.loginfo("Exiting as requested by user.")
             sys.exit(0)
-
-    def choose_controller(self):
-        """Ask the user to select the desired controller from the available list."""
-        rospy.loginfo("Available trajectory controllers:")
-        for (index, name) in enumerate(JOINT_TRAJECTORY_CONTROLLERS):
-            rospy.loginfo("{} (joint-based): {}".format(index, name))
-        for (index, name) in enumerate(CARTESIAN_TRAJECTORY_CONTROLLERS):
-            rospy.loginfo("{} (Cartesian): {}".format(index + len(JOINT_TRAJECTORY_CONTROLLERS), name))
-        choice = -1
-        while choice < 0:
-            input_str = input(
-                "Please choose a controller by entering its number (Enter '0' if "
-                "you are unsure / don't care): "
-            )
-            try:
-                choice = int(input_str)
-                if choice < 0 or choice >= len(JOINT_TRAJECTORY_CONTROLLERS) + len(
-                    CARTESIAN_TRAJECTORY_CONTROLLERS
-                ):
-                    rospy.loginfo(
-                        "{} not inside the list of options. "
-                        "Please enter a valid index from the list above.".format(choice)
-                    )
-                    choice = -1
-            except ValueError:
-                rospy.loginfo("Input is not a valid number. Please try again.")
-        if choice < len(JOINT_TRAJECTORY_CONTROLLERS):
-            self.joint_trajectory_controller = JOINT_TRAJECTORY_CONTROLLERS[choice]
-            return "joint_based"
-
-        self.cartesian_trajectory_controller = CARTESIAN_TRAJECTORY_CONTROLLERS[
-            choice - len(JOINT_TRAJECTORY_CONTROLLERS)
-        ]
-        return "cartesian"
 
     def switch_controller(self, target_controller):
         """Activates the desired controller and stops all others from the predefined list above"""
@@ -265,13 +380,15 @@ if __name__ == "__main__":
     # import json
     import json
 
-    path = '/home/when/github/crafts_extended/json/ur10e_milling_ROS_toolpath.json'
-    with open(path,'r') as pat:
-        toolpath = json.load(pat)
+    rospy.init_node("trajectory_client", anonymous=True)
 
-    config = toolpath[1]['data']['joint_values']
+    mover = TrajectoryClient()
 
-    # pose trajectory as a list of dictionary items with position and orientation
-    client = TrajectoryClient()
-    # client.send_joint_trajectory([config])
-    client.send_cartesian_trajectory(trajectory = toolpath[2:])
+
+    toolpath = json.loads(get_actual_toolpath())
+
+    config = toolpath[1]["data"]["joint_values"]
+
+    # mover.send_joint_trajectory([config])
+    rospy.sleep(0.5)
+    mover.send_cartesian_trajectory(trajectory=toolpath[3:])

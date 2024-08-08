@@ -185,7 +185,6 @@ class TrajectoryClient:
     """Small trajectory client to test a joint trajectory"""
 
     def __init__(self):
-
         timeout = rospy.Duration(5)
         self.switch_srv = rospy.ServiceProxy(
             "controller_manager/switch_controller", SwitchController
@@ -585,6 +584,14 @@ def on_message_fabrication(client, userdata, message):
     rospy.loginfo(
         f"Fabrication mode message received: {message.payload.decode('utf-8')}"
     )
+    # stop mqtt client
+    # kill existing ros node
+
+
+
+    client.disconnect()
+    rospy.sleep(1.0)
+    stop_program()
     # Add specific actions for mode 3
     rospy.sleep(1.0)
     # set_tcp(mill)
@@ -600,9 +607,16 @@ def on_message_fabrication(client, userdata, message):
 
     config = toolpath[1]["data"]["joint_values"]
 
-    mover.send_joint_trajectory([config])
+    # mover.send_joint_trajectory([config])
+    rospy.sleep(0.5)
     mover.send_cartesian_trajectory(trajectory=toolpath[3:])
 
+
+def on_message_speed(client, userdata, message):
+    rospy.sleep(0.5)
+    rospy.loginfo(f"Setting speed to: {message.payload.decode('utf-8')}")
+    set_speed(float(message.payload.decode('utf-8'))/100.0)
+    rospy.sleep(0.5)
 
 def on_message(client, userdata, message):
     """
@@ -633,6 +647,9 @@ def on_message(client, userdata, message):
     elif mode == "3":
         client.message_callback_add(COMMANDS_TOPIC, on_message_fabrication)
         client.subscribe(COMMANDS_TOPIC)
+        # client.message_callback_add(SPEED_TOPIC, on_message_speed)
+        # client.subscribe(SPEED_TOPIC)
+
         rospy.loginfo("Switched to fabrication mode")
         cur_mode = mode
     else:
