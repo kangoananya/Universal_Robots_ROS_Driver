@@ -205,6 +205,7 @@ class TrajectoryClient:
 
         self.joint_trajectory_controller = JOINT_TRAJECTORY_CONTROLLERS[0]
         self.cartesian_trajectory_controller = CARTESIAN_TRAJECTORY_CONTROLLERS[0]
+        self.cartesian = CARTESIAN_TRAJECTORY_CONTROLLERS[2]
 
     def send_joint_trajectory(self, configs):
         """Creates a trajectory and sends it using the selected action server"""
@@ -256,6 +257,10 @@ class TrajectoryClient:
             "Trajectory execution finished in state {}".format(result.error_code)
         )
 
+    # def send_cartesian(self, trajectory):
+    #     self.switch_controller(self.cartesian)
+    #     goal = 
+
     def send_cartesian_trajectory(self, trajectory):
         """Creates a Cartesian trajectory and sends it using the selected action server"""
         self.switch_controller(self.cartesian_trajectory_controller)
@@ -290,20 +295,16 @@ class TrajectoryClient:
                     geometry_msgs.Quaternion(*point["orientation"]),
                 )
             )
-            time_list.append(point["timestamp"])
+            time_list.append(point["timestamp"]*2.0)
 
 
         for pose, time in zip(pose_list, time_list):
             trajectory_point = CartesianTrajectoryPoint()
             trajectory_point.pose = pose
-            trajectory_point.twist = geometry_msgs.Twist(
-                linear=geometry_msgs.Vector3(0.005, 0.005, 0.005),
-                angular=geometry_msgs.Vector3(0.005, 0.005, 0.005),
-            )
-            trajectory_point.acceleration = geometry_msgs.Accel(
-                linear=geometry_msgs.Vector3(0.005, 0.005, 0.005),
-                angular=geometry_msgs.Vector3(0.005, 0.005, 0.005),
-            )
+            # trajectory_point.twist = geometry_msgs.Twist(
+            #     linear=geometry_msgs.Vector3(0.01, 0.01, 0.01),
+            #     angular=geometry_msgs.Vector3(0.01, 0.01, 0.01),
+            # )
             trajectory_point.time_from_start = rospy.Duration(time)
 
             goal.trajectory.points.append(trajectory_point)
@@ -599,7 +600,7 @@ def on_message_fabrication(client, userdata, message):
     # Add specific actions for mode 3
     play_program()
     rospy.sleep(0.5)
-    set_speed(0.3)
+    set_speed(0.5)
     rospy.sleep(0.5)
     mover = TrajectoryClient()
 
@@ -607,7 +608,7 @@ def on_message_fabrication(client, userdata, message):
 
     config = toolpath[1]["data"]["joint_values"]
 
-    # mover.send_joint_trajectory([config])
+    mover.send_joint_trajectory([config])
     rospy.sleep(0.5)
     mover.send_cartesian_trajectory(trajectory=toolpath[3:])
 
